@@ -1,7 +1,8 @@
-import re
+import re, os
 from typing import List, Tuple, Dict
 
 import requests
+from fastapi import HTTPException
 
 # --- ĐÃ CÓ ở bạn, giữ nguyên/đặt ở đầu file ---
 # heuristic_extract_basic(), fetch_bytes_from_url()
@@ -249,15 +250,46 @@ def heuristic_extract_basic(text: str) -> dict:
         "links": links,
     }
 
-def fetch_bytes_from_url(url: str) -> bytes:
+def fetch_bytes_from_url(url: str, max_bytes: int = 10 * 1024 * 1024) -> bytes:
     """
     Tải nội dung nhị phân (bytes) từ một URL — hỗ trợ HTTP/HTTPS.
-    Dùng cho /parse-resume (khi CV có link URL).
+    Có kiểm tra kích thước tối đa (mặc định 10MB).
     """
     try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        return resp.content
+        with requests.get(url, stream=True, timeout=15) as resp:
+            resp.raise_for_status()
+            total = 0
+            chunks = []
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=413, detail="file_too_large")
+                chunks.append(chunk)
+            return b"".join(chunks)
     except Exception as e:
         print(f"[fetch_bytes_from_url] Lỗi khi tải URL {url}: {e}")
-        raise
+        raise HTTPException(status_code=400, detail=f"fetch_failed: {e}")
+
+
+# ---- helpers ----
+def gs_post(payload: dict) -> dict:
+    r = requests.post(os.getenv("GS_URL") , json=payload, timeout=60)
+    try:
+        r.raise_for_status()
+    except Exception:
+        # ném lỗi có body để dễ debug
+        raise HTTPException(502, f"GS error: {r.text}")
+    data = r.json()
+    if not data.get("ok"):
+        raise HTTPException(502, f"GS fail: {data}")
+    return data
+
+def _guess_mime(url: str) -> str:
+    # fallback đơn giản theo đuôi file
+    u = url.lower()
+    if u.endswith(".pdf"): return "application/pdf"
+    if u.endswith(".docx"): return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if u.endswith(".doc"): return "application/msword"
+    return "application/octet-stream"
