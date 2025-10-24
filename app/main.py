@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from .ocr import extract_text_bytes
 from .parsers import llm_parse
-from .utils import fetch_bytes_from_url, gs_post, _guess_mime
+from .utils import fetch_bytes_from_url, gs_post, _guess_mime, extract_address, to_skills_str, extract_position
 
 
 load_dotenv()
@@ -70,7 +70,6 @@ def parse_resume():
         "action": "get_file_url_for_message",
         "message_id": message_id
     })
-    print("file_info -----> ", file_info)
     file_url = file_info["file_url"]
     file_mime = file_info.get("file_mime") or _guess_mime(file_url)
 
@@ -85,23 +84,44 @@ def parse_resume():
         raise HTTPException(422, "empty_text_after_extraction")
 
     raw = llm_parse(text) or {}
-    c = (raw.get("candidate") or raw)
+    cand = (raw.get("candidate") or {})
+
+    skills_str = to_skills_str(cand.get("skills") or cand.get("skill") or raw.get("skills"))
+
+    # skill = (raw.get("skills") or raw)
+    # school = data["education"][0]["school"]
+    # gpa = data["education"][0]["gpa"]
 
     # 4) Trả về gọn + kèm meta email/file
+    # skills_str = ", ".join(skill or "").strip())
+    school = gpa = ""
+    edu = raw.get("education") or []
+    if isinstance(edu, dict):
+        school = (edu.get("school") or "").strip()
+        gpa = (edu.get("gpa") or "").strip()
+    elif isinstance(edu, list) and len(edu) > 0 and isinstance(edu[0], dict):
+        school = (edu[0].get("school") or "").strip()
+        gpa = (edu[0].get("gpa") or "").strip()
+
+    position = extract_position(subject)
+
     return {
         "ok": True,
         "parser_version": "v1",
         "message_id": message_id,
         "subject": subject,
+        "position": position,
         "file_url": file_url,
         "file_id": file_info.get("file_id"),
         "candidate": {
-            "full_name": (c.get("full_name") or "").strip(),
-            "email":     (c.get("email") or "").strip(),
-            "phone":     (c.get("phone") or "").strip(),
-        },
-        # tuỳ chọn: trả thêm raw để debug
-        # "raw": raw
+            "full_name": (cand.get("full_name") or "").strip(),
+            "email": (cand.get("email") or "").strip(),
+            "phone": (cand.get("phone") or "").strip(),
+            "location": extract_address((cand.get("location") or "").strip()),
+            "skills": skills_str,
+            "school": school,
+            "gpa": gpa,
+        }
     }
 
 
@@ -116,23 +136,23 @@ def parse_resume_b64(req: B64Req):
     text, mode = extract_text_bytes(data, req.file_mime, req.lang_hint or OCR_LANGS)
     if not text.strip():
         raise HTTPException(422, "empty_text_after_extraction")
-    # parsed = llm_parse(text)
-    # parsed.update({"ok": True, "parser_version": "v1"})
-    # return parsed
+    parsed = llm_parse(text)
+    parsed.update({"ok": True, "parser_version": "v1"})
+    return parsed
 
-    # custom response
-    raw = llm_parse(text) or {}  # có thể là {}, None
-    # Hỗ trợ cả 2 kiểu: candidate.* hoặc field ở root (đề phòng LLM lệch format)
-    c = (raw.get("candidate") or raw)
-    resp = {
-        "ok": True,
-        "candidate": {
-            "full_name": (c.get("full_name") or "").strip(),
-            "email": (c.get("email") or "").strip(),
-            "phone": (c.get("phone") or "").strip(),
-        },
-    }
-    return resp
+    # # custom response
+    # raw = llm_parse(text) or {}  # có thể là {}, None
+    # # Hỗ trợ cả 2 kiểu: candidate.* hoặc field ở root (đề phòng LLM lệch format)
+    # c = (raw.get("candidate") or raw)
+    # resp = {
+    #     "ok": True,
+    #     "candidate": {
+    #         "full_name": (c.get("full_name") or "").strip(),
+    #         "email": (c.get("email") or "").strip(),
+    #         "phone": (c.get("phone") or "").strip(),
+    #     },
+    # }
+    # return resp
 
 
 # --- helpers ---

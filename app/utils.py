@@ -293,3 +293,69 @@ def _guess_mime(url: str) -> str:
     if u.endswith(".docx"): return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     if u.endswith(".doc"): return "application/msword"
     return "application/octet-stream"
+
+def extract_address(location: str) -> str:
+    """
+    Lấy phần sau email hoặc ký tự đặc biệt, ví dụ sau dấu ')' hoặc '#'
+    """
+    if not location:
+        return ""
+
+    # loại bỏ (cid:209) và các ký tự lạ
+    cleaned = re.sub(r"\(cid:[^)]+\)", "", location)
+
+    # tách theo email hoặc dấu '#' và lấy phần phía sau
+    parts = re.split(r"#|\s[\w\.-]+@[\w\.-]+", cleaned, maxsplit=1)
+    if len(parts) > 1:
+        address = parts[-1]
+    else:
+        # fallback: nếu không tách được thì thử tìm cụm dạng số nhà hoặc từ khóa địa chỉ
+        m = re.search(r"(\d+\/\d+.*)", cleaned)
+        address = m.group(1) if m else cleaned
+
+    # dọn khoảng trắng thừa
+    return address.strip(" ,;:-")
+
+def to_skills_str(v):
+    import re
+    if not v:
+        return ""
+    if isinstance(v, list):
+        items = v
+    elif isinstance(v, str):
+        items = re.split(r"[,\n;•|/]+", v)
+    else:
+        return ""
+    cleaned, seen, out = [], set(), []
+    for s in items:
+        if isinstance(s, str):
+            t = re.sub(r"\s+", " ", s).strip(" .,-")
+            if t:
+                cleaned.append(t)
+    for t in cleaned:
+        k = t.lower()
+        if k not in seen:
+            seen.add(k); out.append(t)
+    return ", ".join(out)
+
+def extract_position(subject: str) -> str:
+    """
+    Trích ra vị trí tuyển dụng từ subject, ví dụ:
+    'Ứng tuyển vị trí Backend - Trần Văn Đạt' => 'Backend'
+    """
+    if not subject:
+        return ""
+
+    # match các dạng thường gặp
+    m = re.search(r"vị trí\s+([A-Za-zÀ-ỹ\s\-_/]+)", subject, re.IGNORECASE)
+    if m:
+        pos = m.group(1).strip(" -–—")
+        # chỉ lấy 1-2 từ đầu (ví dụ: "Backend Developer" / "Fullstack")
+        pos = re.split(r"[-–—,/]", pos)[0].strip()
+        return pos
+
+    # fallback: thử tìm keyword quen thuộc
+    for kw in ["Backend", "FrontEnd", "Fullstack", "Mobile", "DevOps"]:
+        if kw.lower() in subject.lower():
+            return kw
+    return ""
