@@ -1,7 +1,6 @@
 import os, json
 from .schema import ParseResult
-from .utils import heuristic_extract_basic
-from .utils import (
+from app.utils.common import (
     heuristic_extract_basic, split_sections_vi, parse_about_vi,
     parse_skills_vi, parse_projects_vi, parse_experiences_vi,
     parse_education_vi, guess_location_vi, extract_all_links

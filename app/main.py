@@ -1,13 +1,18 @@
-import os, base64, mimetypes, requests
+import os, base64
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from .ocr import extract_text_bytes
-from .parsers import llm_parse
-from .utils import fetch_bytes_from_url, gs_post, _guess_mime, extract_address, to_skills_str, extract_position
+import google.generativeai as genai
 
-
+from app.parsers import llm_parse
+from app.utils.common import fetch_bytes_from_url, gs_post, _guess_mime, extract_address
+from app.utils.pdf import (resolve_model_name,
+                           coerce_str, json_coerce, to_skills_str,
+                           norm_email, norm_phone, clean_location, extract_position,
+                           extract_drive_file_id, download_drive_file, drive_direct_url,
+                           truncate_text, extract_text_bytes)
+from app.promt.geminni import PROMPT_RESUME_PARSER
 load_dotenv()
 GS_URL = os.getenv("GS_URL")
 GS_TOKEN = os.getenv("GS_TOKEN")
@@ -124,6 +129,104 @@ def parse_resume():
         }
     }
 
+# Đọc PDF với Gemini
+@app.post("/gemini/parse-resume")
+def parse_resume_gemini(req: UrlReq):
+    client = genai
+    # Lấy file info
+    newest = gs_post({"token": GS_TOKEN, "action": "get_newest_message_id"})
+    message_id = newest["message_id"]
+    subject = newest.get("subject", "")
+
+    file_info = gs_post({
+        "token": GS_TOKEN,
+        "action": "get_file_url_for_message",
+        "message_id": message_id
+    })
+    file_url = file_info["file_url"]
+    file_mime = file_info.get("file_mime") or _guess_mime(file_url)
+    file_sub = file_info.get("message_id")
+
+    # 1) API key
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "missing_env_GEMINI_API_KEY")
+    client.configure(api_key=api_key)
+
+    # 2) Lấy file từ Google Drive
+    drive_url = coerce_str(req.file_url)
+    if not drive_url:
+        raise HTTPException(400, "file_url_required")
+
+    try:
+        file_id = extract_drive_file_id(drive_url)
+    except HTTPException as e:
+        raise e
+
+    pdf_bytes = download_drive_file(file_id)
+    if not pdf_bytes:
+        raise HTTPException(422, "empty_file_downloaded")
+
+    # 3) Trích TEXT trước khi gọi Gemini
+    file_mime = "application/pdf"
+    text, kind = extract_text_bytes(pdf_bytes, file_mime, "vie+eng")
+
+    # 4) Gọi Gemini (model hợp lệ)
+    model_name = resolve_model_name()
+    model = client.GenerativeModel(model_name=model_name)
+
+    try:
+        if kind == "text" and text and len(text.strip()) >= 100:
+            # ✅ PDF có text thật → gửi TEXT
+            text_for_llm = truncate_text(text)
+            resp = model.generate_content([PROMPT_RESUME_PARSER, text_for_llm])
+        else:
+            # ⚠️ PDF scan/ít text → gửi BLOB PDF
+            pdf_blob = {"mime_type": "application/pdf", "data": pdf_bytes}
+            resp = model.generate_content([PROMPT_RESUME_PARSER, pdf_blob])
+    except Exception as e:
+        raise HTTPException(502, f"gemini_error: {e}")
+
+    # 5) Parse JSON từ model
+    raw = json_coerce(coerce_str(getattr(resp, "text", ""))) or {}
+    cand = raw.get("candidate") if isinstance(raw, dict) else {}
+    if not isinstance(cand, dict):
+        cand = {}
+
+    # 6) Chuẩn hoá về schema trả về
+    position = extract_position(subject)
+
+    skills_str = to_skills_str(cand.get("skills") or cand.get("skill") or raw.get("skills"))
+    # fallback lấy school/gpa từ education[0] nếu cần
+    if isinstance(raw.get("education"), list) and raw["education"]:
+        school = coerce_str(cand.get("school") or raw["education"][0].get("school"))
+        gpa    = coerce_str(cand.get("gpa")    or raw["education"][0].get("gpa"))
+    else:
+        school = coerce_str(cand.get("school"))
+        gpa    = coerce_str(cand.get("gpa"))
+
+    email    = norm_email(coerce_str(cand.get("email")))
+    phone    = norm_phone(coerce_str(cand.get("phone")))
+    location = clean_location(coerce_str(cand.get("location")))
+
+    return {
+        "ok": True,
+        "parser_version": "v1",
+        "message_id": message_id,
+        "subject": subject,
+        "position": position,
+        "file_url": f"https://drive.google.com/uc?export=download&id={file_id}",
+        "file_id": file_id,
+        "candidate": {
+            "full_name": coerce_str(cand.get("full_name")),
+            "email": email,
+            "phone": phone,
+            "location": location,
+            "skills": skills_str,
+            "school": school,
+            "gpa": gpa,
+        }
+    }
 
 @app.post("/parse-resume-base64")
 def parse_resume_b64(req: B64Req):
