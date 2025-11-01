@@ -131,7 +131,7 @@ def parse_resume():
 
 # Đọc PDF với Gemini
 @app.post("/gemini/parse-resume")
-def parse_resume_gemini(req: UrlReq):
+def parse_resume_gemini():
     client = genai
     # Lấy file info
     newest = gs_post({"token": GS_TOKEN, "action": "get_newest_message_id"})
@@ -154,7 +154,7 @@ def parse_resume_gemini(req: UrlReq):
     client.configure(api_key=api_key)
 
     # 2) Lấy file từ Google Drive
-    drive_url = coerce_str(req.file_url)
+    drive_url = coerce_str(file_url)
     if not drive_url:
         raise HTTPException(400, "file_url_required")
 
